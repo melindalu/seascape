@@ -1,0 +1,588 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8">
+<title>seafaring</title>
+
+<style>
+body {
+  margin  : 0;
+  padding : 0;
+}
+
+#error {
+  display : none;
+}
+
+#simulation {
+  border : none;
+}
+</style>
+
+<script id="quad-vertex-shader" type="x-shader/x-vertex">
+precision highp float;
+
+attribute vec2 position;
+
+varying vec2 f_Position;
+
+void main(void) {
+  f_Position = position;
+  gl_Position = vec4(position, 0.0, 1.0);
+}
+</script>
+
+<script id="simulation-fft-fragment-shader" type="x-shader/x-fragment">
+precision highp float;
+
+uniform float tileResolution;
+uniform sampler2D simulationIndex;
+uniform float currentTime;
+uniform float waveOffset;
+uniform float waveMultiplier;
+
+varying vec2 f_Position;
+
+vec2 conjugate(vec2 a) {
+  return vec2(a.x, -a.y);
+}
+
+vec2 complexExponentiate(float k) {
+  return vec2(cos(k), sin(k));
+}
+
+vec2 complexAdd(vec2 a, vec2 b) {
+  return vec2(a.x + b.x, a.y + b.y);
+}
+
+vec2 complexMultiply(vec2 a, vec2 b) {
+  return vec2(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y);
+}
+
+void main(void) {
+  vec2 texCoord = (f_Position + vec2(1.0)) * 0.5;
+  vec2 texCoordMirrored = vec2(1.0) - texCoord;
+  vec2 normalizedCoord = (texCoord * tileResolution) - vec2(0.5);
+  vec2 wave = (normalizedCoord + waveOffset) * waveMultiplier;
+
+  float dispersion = sqrt(9.81 * length(wave));
+
+  vec2 waveHeight = texture2D(simulationIndex, texCoord).xy;
+  vec2 mirroredWaveHeight = texture2D(simulationIndex, texCoordMirrored).xy;
+
+  gl_FragColor = vec4(complexAdd(complexMultiply(waveHeight, complexExponentiate(dispersion * currentTime)), complexMultiply(conjugate(mirroredWaveHeight), complexExponentiate(-dispersion * currentTime))), 0.0, 1.0);
+}
+</script>
+
+<script id="horizontal-fft-fragment-shader" type="x-shader/x-fragment">
+precision highp float;
+
+uniform sampler2D fftData;
+uniform sampler2D butterflyData;
+
+varying vec2 f_Position;
+
+vec2 complexAdd(vec2 a, vec2 b) {
+  return vec2(a.x + b.x, a.y + b.y);
+}
+
+vec2 complexMultiply(vec2 a, vec2 b) {
+  return vec2(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y);
+}
+
+void main (void) {
+  vec2 texCoord = (f_Position + vec2(1.0)) * 0.5;
+  vec4 indicesAndWeight = texture2D(butterflyData, texCoord);
+
+  vec2 source1 = texture2D(fftData, vec2(indicesAndWeight.r, texCoord.y)).xy;
+  vec2 source2 = texture2D(fftData, vec2(indicesAndWeight.g, texCoord.y)).xy;
+  gl_FragColor = vec4(complexAdd(source1, complexMultiply(source2, indicesAndWeight.ba)), 0.0, 1.0);
+}
+</script>
+
+<script id="vertical-fft-fragment-shader" type="x-shader/x-fragment">
+precision highp float;
+
+uniform sampler2D fftData;
+uniform sampler2D butterflyData;
+
+varying vec2 f_Position;
+
+vec2 complexAdd(vec2 a, vec2 b) {
+  return vec2(a.x + b.x, a.y + b.y);
+}
+
+vec2 complexMultiply(vec2 a, vec2 b) {
+  return vec2(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y);
+}
+
+void main (void) {
+  vec2 texCoord = (f_Position + vec2(1.0)) * 0.5;
+  vec4 indicesAndWeight = texture2D(butterflyData, texCoord.yx);
+
+  vec2 source1 = texture2D(fftData, vec2(texCoord.x, indicesAndWeight.r)).xy;
+  vec2 source2 = texture2D(fftData, vec2(texCoord.x, indicesAndWeight.g)).xy;
+  gl_FragColor = vec4(complexAdd(source1, complexMultiply(source2, indicesAndWeight.ba)), 0.0, 1.0);
+}
+</script>
+
+<script id="sky-fragment-shader" type="x-shader/x-fragment">
+precision highp float;
+
+uniform vec4 skyParams1;
+uniform vec4 skyParams2;
+uniform vec4 skyParams3;
+uniform vec4 skyParams4;
+uniform vec4 skyParams5;
+uniform vec4 skyParams6;
+uniform vec3 eyePos;
+uniform vec3 sunPosition;
+uniform vec3 eyeCenter;
+uniform vec3 eyeUp;
+uniform float fov;
+
+varying vec2 f_Position;
+
+vec3 getPixelDirection() {
+  vec3 view = normalize(eyeCenter - eyePos);
+  vec3 A = cross(view, eyeUp);
+  vec3 B = cross(A, view);
+  vec3 M = eyePos + view;
+  vec3 V = B * (length(view) * tan(fov) / length(B));
+  vec3 H = -A * (length(view) * tan(fov) / length(A));
+  float t1 = f_Position.x;
+  float t2 = f_Position.y;
+  vec3 P = M - t1 * H + t2 * V;
+  vec3 R = normalize(P - eyePos);
+  return R;
+}
+
+vec3 skyExtinction(float dist) {
+  return exp(dist * skyParams6.xyz);
+}
+
+vec3 skyScattering(float cosTheta) {
+  float rayleighPhase = (cosTheta * cosTheta) * skyParams6.w + skyParams6.w;
+  float miePhase = skyParams1.w * pow(skyParams2.w * cosTheta + skyParams3.w, -1.5);
+  return skyParams2.xyz * rayleighPhase + (skyParams3.xyz * miePhase);
+}
+
+float baseOpticalDepth(vec3 ray) {
+  float a1 = skyParams4.x * ray.y;
+  return sqrt(a1 * a1 + skyParams4.w) - a1;
+}
+
+float opticalDepth(vec3 pos, vec3 ray) {
+  pos.y += skyParams4.x;
+  float a0 = skyParams4.y - dot(pos, pos);
+  float a1 = dot(pos, ray);
+  return sqrt(a1 * a1 + a0) - a1;
+}
+
+vec3 getColor(vec3 viewVec) {
+  vec3 sunVector = normalize(sunPosition);
+  float cosTheta = dot(viewVec, sunVector);
+  float rayDist = baseOpticalDepth(viewVec);
+
+  vec3 extinction = skyExtinction(rayDist);
+  vec3 lightRayPos = viewVec * (rayDist * skyParams4.z);
+  float lightRayDist = opticalDepth(lightRayPos, sunVector);
+  float lightRayDistFull = opticalDepth(viewVec * rayDist, sunVector);
+  lightRayDist = max(lightRayDist, lightRayDistFull);
+  vec3 incomingLight = skyExtinction(lightRayDist);
+
+  vec3 scattering = skyScattering(cosTheta);
+  scattering *= 1.0 - extinction;
+
+  vec3 incomingScatter = incomingLight * scattering;
+
+  float sunStrength = clamp(cosTheta * skyParams1.x + skyParams1.y, 0.0, 1.0);
+  sunStrength *= sunStrength;
+  vec3 sunDisk = extinction * sunStrength;
+  return skyParams5.xyz * (skyParams5.w * sunDisk + incomingScatter);
+}
+
+void main() {
+  vec3 viewVec = getPixelDirection();
+  vec3 outputColor = getColor(viewVec);
+  gl_FragColor = vec4(outputColor, 1.0);
+}
+</script>
+
+<script id="highres-render-vertex-shader" type="x-shader/x-vertex">
+precision highp float;
+
+attribute vec3 position;
+attribute vec2 texCoord;
+
+uniform mat4 model;
+uniform mat4 modelViewPerspective;
+uniform sampler2D simulationIndex;
+
+uniform float deltaNorm;
+uniform float deltaMeters;
+
+varying vec3 f_WorldPosition;
+varying vec3 f_WorldNormal;
+
+vec3 shiftCoord(vec2 coord) {
+  vec3 shiftedCoord = vec3(coord, 0.0);
+  if (shiftedCoord.x > 1.0) { shiftedCoord.x -= 1.0; shiftedCoord.z = 1.0; }
+  if (shiftedCoord.x < 0.0) { shiftedCoord.x += 1.0; shiftedCoord.z = 1.0; }
+  if (shiftedCoord.y > 1.0) { shiftedCoord.y -= 1.0; shiftedCoord.z = 1.0; }
+  if (shiftedCoord.y < 0.0) { shiftedCoord.y += 1.0; shiftedCoord.z = 1.0; }
+  return shiftedCoord;
+}
+
+float getHeight(vec2 coord, float delta) {
+  vec2 texCoord1 = vec2(floor((coord - vec2(delta * 0.5)) * 512.0 + 0.5));
+  if (abs(texCoord1.x + texCoord1.y - 2.0 * floor((texCoord1.x + texCoord1.y) / 2.0 + 1e-6)) < 0.1) {
+    return -texture2D(simulationIndex, coord).r;
+  } else {
+    return texture2D(simulationIndex, coord).r;
+  }
+}
+
+void main(void) {
+  float height = getHeight(texCoord, deltaNorm);
+  f_WorldPosition = (model * vec4(position.x, height, position.z, 1.0)).xyz;
+
+  vec3 shiftedUpCoord = shiftCoord(texCoord + vec2(0.0, deltaNorm));
+  vec3 shiftedDownCoord = shiftCoord(texCoord - vec2(0.0, deltaNorm));
+  vec3 shiftedLeftCoord = shiftCoord(texCoord - vec2(deltaNorm, 0.0));
+  vec3 shiftedRightCoord = shiftCoord(texCoord + vec2(deltaNorm, 0.0));
+
+  float heightUp = getHeight(shiftedUpCoord.xy, deltaNorm);
+  float heightDown = getHeight(shiftedDownCoord.xy, deltaNorm);
+  float heightLeft = getHeight(shiftedLeftCoord.xy, deltaNorm);
+  float heightRight = getHeight(shiftedRightCoord.xy, deltaNorm);
+
+  vec3 upPositionWorld = (model * vec4(position.x, heightUp, position.z + deltaMeters, 1.0)).xyz;
+  vec3 downPositionWorld = (model * vec4(position.x, heightDown,  position.z - deltaMeters, 1.0)).xyz;
+  vec3 leftPositionWorld = (model * vec4(position.x - deltaMeters, heightLeft, position.z, 1.0)).xyz;
+  vec3 rightPositionWorld = (model * vec4(position.x + deltaMeters, heightRight, position.z, 1.0)).xyz;
+
+  f_WorldNormal = normalize(cross(f_WorldPosition - leftPositionWorld, upPositionWorld - f_WorldPosition));
+  f_WorldNormal += normalize(cross(f_WorldPosition - upPositionWorld, rightPositionWorld - f_WorldPosition));
+  f_WorldNormal += normalize(cross(f_WorldPosition - rightPositionWorld, downPositionWorld - f_WorldPosition));
+  f_WorldNormal += normalize(cross(f_WorldPosition - downPositionWorld, leftPositionWorld - f_WorldPosition));
+  f_WorldNormal = normalize(f_WorldNormal);
+
+  float count = 1.0;
+  if (shiftedUpCoord.z > 0.9) { height += heightUp; count += 1.0; }
+  if (shiftedDownCoord.z > 0.9) { height += heightDown; count += 1.0; }
+  if (shiftedLeftCoord.z > 0.9) { height += heightLeft; count += 1.0; }
+  if (shiftedRightCoord.z > 0.9) { height += heightRight; count += 1.0; }
+  gl_Position = modelViewPerspective * vec4(position.x, height / count, position.z, 1.0);
+}
+</script>
+
+<script id="highres-render-fragment-shader" type="x-shader/x-fragment">
+precision highp float;
+
+uniform vec3 oceanColor;
+uniform vec4 skyParams1;
+uniform vec4 skyParams2;
+uniform vec4 skyParams3;
+uniform vec4 skyParams4;
+uniform vec4 skyParams5;
+uniform vec4 skyParams6;
+uniform vec3 eyePos;
+uniform vec3 sunPosition;
+
+varying vec3 f_WorldPosition;
+varying vec3 f_WorldNormal;
+
+vec3 toneMap (vec3 color, float exposure) {
+  return 1.0 - exp(-color * exposure);
+}
+
+vec3 skyExtinction(float dist) {
+  return exp(dist * skyParams6.xyz);
+}
+
+vec3 skyScattering(float cosTheta) {
+  float rayleighPhase = cosTheta * cosTheta * skyParams6.w + skyParams6.w;
+  float miePhase = skyParams1.w * pow(skyParams2.w * cosTheta + skyParams3.w, -1.5);
+  return skyParams2.xyz * rayleighPhase + (skyParams3.xyz * miePhase);
+}
+
+float baseOpticalDepth(vec3 ray) {
+  float a1 = skyParams4.x * ray.y;
+  return sqrt(a1 * a1 + skyParams4.w) - a1;
+}
+
+float opticalDepth(vec3 position, vec3 ray) {
+  position.y += skyParams4.x;
+  float a0 = skyParams4.y - dot(position, position);
+  float a1 = dot(position, ray);
+  return sqrt(a1 * a1 + a0) - a1;
+}
+
+vec3 getSkyColor(vec3 viewVec) {
+  vec3 sunVector = normalize(sunPosition);
+  float cosTheta = dot(viewVec, sunVector);
+  float rayDist = baseOpticalDepth(viewVec);
+
+  vec3 extinction = skyExtinction(rayDist);
+  vec3 lightRayPos = viewVec * (rayDist * skyParams4.z);
+  float lightRayDist = opticalDepth(lightRayPos, sunVector);
+  float lightRayDistFull = opticalDepth(viewVec * rayDist, sunVector);
+  lightRayDist = max(lightRayDist, lightRayDistFull);
+  vec3 incomingLight = skyExtinction(lightRayDist);
+
+  vec3 scattering = skyScattering(cosTheta);
+  scattering *= 1.0 - extinction;
+
+  vec3 incomingScatter = incomingLight * scattering;
+
+  float sunStrength = clamp(cosTheta * skyParams1.x + skyParams1.y, 0.0, 1.0);
+  sunStrength *= sunStrength;
+  vec3 sunDisk = extinction * sunStrength;
+  return skyParams5.xyz * (skyParams5.w * sunDisk + incomingScatter);
+}
+
+void main(void) {
+  vec3 incidentDirection = normalize(f_WorldPosition - sunPosition);
+  vec3 standardNormal = -normalize(f_WorldNormal);
+  vec3 reflectionDirection = normalize(incidentDirection - 2.0 * standardNormal * dot(incidentDirection, standardNormal));
+  vec3 eyeRayDirection = normalize(eyePos - f_WorldPosition);
+  vec3 directionalLightDir = vec3(0.0, 1.0, 0.0);
+  vec3 view = normalize(eyePos - f_WorldPosition);
+
+  float specular1 = pow(max(0.01, dot(eyeRayDirection, reflectionDirection)), 5000.0);
+  float incidentAngle = acos(abs(dot(standardNormal, view)));
+  float transmittanceAngle = asin(sin(incidentAngle) / 1.33);
+  float fresnel1 = tan(incidentAngle - transmittanceAngle) / tan(incidentAngle + transmittanceAngle);
+  float fresnel2 = sin(incidentAngle - transmittanceAngle) / sin(incidentAngle + transmittanceAngle);
+  float fresnelReflectivity =(fresnel1 * fresnel1 + fresnel2 * fresnel2) * 0.5;
+
+  vec3 eyeReflectionDirection = normalize(-eyeRayDirection - 2.0 * standardNormal * dot(-eyeRayDirection, standardNormal));
+  eyeReflectionDirection.y = abs(eyeReflectionDirection.y);
+  vec3 sunColor = getSkyColor(normalize(sunPosition));
+  vec3 skyColor = getSkyColor(eyeReflectionDirection) * 10.0;
+  vec3 sky = fresnelReflectivity * skyColor;
+
+  float specular2 = clamp(dot(standardNormal, directionalLightDir), 0.0, 1.0);
+  specular2 = pow(specular2, 1.0);
+  vec3 water = (1.0 - fresnelReflectivity) * oceanColor  * specular2 * skyColor;
+
+  vec3 outputColor = 100.0 * specular1 * sunColor + sky + water;
+  gl_FragColor = vec4(toneMap(outputColor, 0.35), 1.0);
+}
+</script>
+
+<script id="lowres-render-vertex-shader" type="x-shader/x-vertex">
+precision highp float;
+
+attribute vec3 position;
+attribute vec2 texCoord;
+
+uniform mat4 model;
+uniform mat4 modelViewPerspective;
+uniform sampler2D simulationIndex;
+uniform float deltaNorm;
+uniform float deltaMeters;
+
+varying vec3 f_WorldPosition;
+varying vec3 f_GridPosition;
+varying vec2 f_TexCoord;
+
+vec3 shiftCoord(vec2 coord) {
+  vec3 shiftedCoord = vec3(coord, 0.0);
+  if (shiftedCoord.x > 1.0) { shiftedCoord.x -= 1.0; shiftedCoord.z = 1.0; }
+  if (shiftedCoord.x < 0.0) { shiftedCoord.x += 1.0; shiftedCoord.z = 1.0; }
+  if (shiftedCoord.y > 1.0) { shiftedCoord.y -= 1.0; shiftedCoord.z = 1.0; }
+  if (shiftedCoord.y < 0.0) { shiftedCoord.y += 1.0; shiftedCoord.z = 1.0; }
+  return shiftedCoord;
+}
+
+float getHeight(vec2 coord, float delta) {
+  vec2 texCoord1 = vec2(floor((coord - vec2(delta * 0.5)) * 512.0 + 0.5));
+  if (abs(texCoord1.x + texCoord1.y - 2.0 * floor((texCoord1.x + texCoord1.y) / 2.0 + 1e-6)) < 0.1) {
+    return -texture2D(simulationIndex, coord).r;
+  } else {
+    return texture2D(simulationIndex, coord).r;
+  }
+}
+
+void main(void) {
+  float height = getHeight(texCoord, deltaNorm);
+
+  f_TexCoord = texCoord;
+
+  vec3 shiftedUpCoord = shiftCoord(texCoord + vec2(0.0, deltaNorm));
+  vec3 shiftedDownCoord = shiftCoord(texCoord - vec2(0.0, deltaNorm));
+  vec3 shiftedLeftCoord = shiftCoord(texCoord - vec2(deltaNorm, 0.0));
+  vec3 shiftedRightCoord = shiftCoord(texCoord + vec2(deltaNorm, 0.0));
+  float heightUp = getHeight(shiftedUpCoord.xy, deltaNorm);
+  float heightDown = getHeight(shiftedDownCoord.xy, deltaNorm);
+  float heightLeft = getHeight(shiftedLeftCoord.xy, deltaNorm);
+  float heightRight = getHeight(shiftedRightCoord.xy, deltaNorm);
+
+  float count = 1.0;
+  if (shiftedUpCoord.z > 0.9) { height += heightUp; count += 1.0; }
+  if (shiftedDownCoord.z > 0.9) { height += heightDown; count += 1.0; }
+  if (shiftedLeftCoord.z > 0.9) { height += heightLeft; count += 1.0; }
+  if (shiftedRightCoord.z > 0.9) { height += heightRight; count += 1.0; }
+
+  f_GridPosition = vec3(position.x, height / count, position.z);
+  f_WorldPosition = (model * vec4(f_GridPosition, 1.0)).xyz;
+  gl_Position = modelViewPerspective * vec4(f_GridPosition, 1.0);
+}
+</script>
+
+<script id="lowres-render-fragment-shader" type="x-shader/x-fragment">
+precision highp float;
+
+uniform sampler2D simulationIndex;
+uniform vec3 oceanColor;
+uniform vec4 skyParams1;
+uniform vec4 skyParams2;
+uniform vec4 skyParams3;
+uniform vec4 skyParams4;
+uniform vec4 skyParams5;
+uniform vec4 skyParams6;
+uniform mat4 model;
+uniform mat4 modelViewPerspective;
+uniform vec3 eyePos;
+uniform vec3 sunPosition;
+uniform float deltaNorm;
+uniform float deltaMeters;
+
+varying vec3 f_WorldPosition;
+varying vec3 f_GridPosition;
+varying vec2 f_TexCoord;
+
+vec3 toneMap(vec3 color, float exposure) {
+  return 1.0 - exp(-color * exposure);
+}
+
+vec3 shiftCoord(vec2 coord) {
+  vec3 result = vec3(coord, 0.0);
+  if (result.x > 1.0) { result.x -= 1.0; result.z = 1.0; }
+  if (result.x < 0.0) { result.x += 1.0; result.z = 1.0; }
+  if (result.y > 1.0) { result.y -= 1.0; result.z = 1.0; }
+  if (result.y < 0.0) { result.y += 1.0; result.z = 1.0; }
+  return result;
+}
+
+vec3 skyExtinction(float dist) {
+  return exp(dist * skyParams6.xyz);
+}
+
+vec3 skyScattering(float cosTheta) {
+  float rayleighPhase = (cosTheta * cosTheta) * skyParams6.w + skyParams6.w;
+  float miePhase = skyParams1.w * pow(skyParams2.w * cosTheta + skyParams3.w, -1.5);
+  return skyParams2.xyz * rayleighPhase + (skyParams3.xyz * miePhase);
+}
+
+float baseOpticalDepth(vec3 ray) {
+  float a1 = skyParams4.x * ray.y;
+  return sqrt(a1 * a1 + skyParams4.w) - a1;
+}
+
+float opticalDepth(vec3 position, vec3 ray) {
+  position.y += skyParams4.x;
+  float a0 = skyParams4.y - dot(position, position);
+  float a1 = dot(position, ray);
+  return sqrt(a1 * a1 + a0) - a1;
+}
+
+vec3 getSkyColor(vec3 viewVec) {
+  vec3 sunVector = normalize(sunPosition);
+  float cosTheta = dot(viewVec, sunVector);
+  float rayDist = baseOpticalDepth(viewVec);
+
+  vec3 extinction = skyExtinction(rayDist);
+  vec3 lightRayPos = viewVec * (rayDist * skyParams4.z);
+  float lightRayDist = opticalDepth(lightRayPos, sunVector);
+  float lightRayDistFull = opticalDepth(viewVec * rayDist, sunVector);
+  lightRayDist = max(lightRayDist, lightRayDistFull);
+  vec3 incomingLight = skyExtinction(lightRayDist);
+
+  vec3 scattering = skyScattering(cosTheta);
+  scattering *= 1.0 - extinction;
+
+  vec3 incomingScatter = incomingLight * scattering;
+
+  float sunStrength = clamp(cosTheta * skyParams1.x + skyParams1.y, 0.0, 1.0);
+  sunStrength *= sunStrength;
+  vec3 sunDisk = extinction * sunStrength;
+  return skyParams5.xyz * (skyParams5.w * sunDisk + incomingScatter);
+}
+
+float getHeight(vec2 coord, float delta) {
+  vec2 texCoord1 = vec2(floor((coord - vec2(delta * 0.5)) * 512.0 + 0.5));
+  if (abs(texCoord1.x + texCoord1.y - 2.0 * floor((texCoord1.x + texCoord1.y) / 2.0 + 1e-6)) < 0.1) {
+    return -texture2D(simulationIndex, coord).r;
+  } else {
+    return texture2D(simulationIndex, coord).r;
+  }
+}
+
+void main(void) {
+  float height = getHeight(f_TexCoord, deltaNorm);
+
+  vec3 shiftedUpCoord = shiftCoord(f_TexCoord + vec2(0.0, deltaNorm));
+  vec3 shiftedDownCoord = shiftCoord(f_TexCoord - vec2(0.0, deltaNorm));
+  vec3 shiftedLeftCoord = shiftCoord(f_TexCoord - vec2(deltaNorm, 0.0));
+  vec3 shiftedRightCoord = shiftCoord(f_TexCoord + vec2(deltaNorm, 0.0));
+
+  vec3 upPositionWorld = (model * vec4(f_GridPosition.x, getHeight(shiftedUpCoord.xy, deltaNorm), f_GridPosition.z + deltaMeters, 1.0)).xyz;
+  vec3 downPositionWorld = (model * vec4(f_GridPosition.x, getHeight(shiftedDownCoord.xy, deltaNorm), f_GridPosition.z - deltaMeters, 1.0)).xyz;
+  vec3 leftPositionWorld = (model * vec4(f_GridPosition.x - deltaMeters, getHeight(shiftedLeftCoord.xy, deltaNorm), f_GridPosition.z, 1.0)).xyz;
+  vec3 rightPositionWorld = (model * vec4(f_GridPosition.x + deltaMeters, getHeight(shiftedRightCoord.xy, deltaNorm), f_GridPosition.z, 1.0)).xyz;
+
+  vec3 totalNormal = normalize(cross(f_WorldPosition - leftPositionWorld, upPositionWorld - f_WorldPosition));
+  totalNormal += normalize(cross(f_WorldPosition - upPositionWorld, rightPositionWorld - f_WorldPosition));
+  totalNormal += normalize(cross(f_WorldPosition - rightPositionWorld, downPositionWorld - f_WorldPosition));
+  totalNormal += normalize(cross(f_WorldPosition - downPositionWorld, leftPositionWorld - f_WorldPosition));
+
+  vec3 incidentDirection = normalize(f_WorldPosition - sunPosition);
+  vec3 standardNormal = -normalize(totalNormal);
+  vec3 reflectionDirection = normalize(incidentDirection - 2.0 * standardNormal * dot(incidentDirection, standardNormal));
+  vec3 eyeRayDirection = normalize(eyePos - f_WorldPosition);
+  vec3 directionalLightDir = vec3(0.0, 1.0, 0.0);
+  vec3 view = normalize(eyePos - f_WorldPosition);
+
+  float specular1 = pow(max(0.01, dot(eyeRayDirection, reflectionDirection)), 5000.0);
+  float incidentAngle = acos(abs(dot(standardNormal, view)));
+  float transmittanceAngle = asin(sin(incidentAngle) / 1.33);
+  float fresnel1 = tan(incidentAngle - transmittanceAngle) / tan(incidentAngle + transmittanceAngle);
+  float fresnel2 = sin(incidentAngle - transmittanceAngle) / sin(incidentAngle + transmittanceAngle);
+  float fresnelReflectivity = (fresnel1 * fresnel1 + fresnel2 * fresnel2) * 0.5;
+
+  vec3 eyeReflectionDirection = normalize(-eyeRayDirection - 2.0 * standardNormal * dot(-eyeRayDirection, standardNormal));
+  eyeReflectionDirection.y = abs(eyeReflectionDirection.y);
+  vec3 sunColor = getSkyColor(normalize(sunPosition));
+  vec3 skyColor = getSkyColor(eyeReflectionDirection) * 10.0;
+  vec3 sky = fresnelReflectivity * skyColor;
+
+  float specular2 = max(0.0, dot(standardNormal, directionalLightDir));
+  vec3 water = (1.0 - fresnelReflectivity) * oceanColor  * specular2 * skyColor;
+
+  vec3 outputColor = 100.0 * specular1 * sunColor + sky + water;
+  gl_FragColor = vec4(toneMap(outputColor, 0.35), 1.0);
+}
+</script>
+
+<script src="libs/gl-matrix-min.js"></script>
+<script src="common.js"></script>
+<script src="normalVariate.js"></script>
+<script src="ocean.js"></script>
+<script src="sky.js"></script>
+<script src="camera.js"></script>
+<script src="simulator.js"></script>
+
+</head>
+
+<body>
+  <canvas id="simulation"></canvas>
+  <div id="error"></div>
+  <script src="main.js"></script>
+</body>
+
+</html>
