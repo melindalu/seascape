@@ -2,6 +2,11 @@
 
 An implementation of Jerry Tessendorf's real-time ocean simulation techniques in WebGL.
 
+### See the currently-running version
+
+[Here](http://blog.melindalu.com/media/2015-06-14-seaflailing/).  
+(use the arrow keys to move forward/backward/left/right; click and drag to look in a different direction; scroll up or down to rise or fall)
+
 ### To do next
 
 * Add procedural ocean sound generator in JS
